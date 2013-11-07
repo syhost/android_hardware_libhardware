@@ -153,6 +153,16 @@ struct audio_config {
 };
 typedef struct audio_config audio_config_t;
 
+#ifdef QCOM_HARDWARE
+/** Structure to save buffer information for applying effects for
+ *  LPA buffers */
+struct buf_info {
+    int bufsize;
+    int nBufs;
+    int **buffers;
+};
+#endif
+
 /* common audio stream parameters and operations */
 struct audio_stream {
 
@@ -282,13 +292,6 @@ struct audio_stream_out {
      * negative status_t. If at least one frame was written successfully prior to the error,
      * it is suggested that the driver return that successful (short) byte count
      * and then return an error in the subsequent call.
-     *
-     * If set_callback() has previously been called to enable non-blocking mode
-     * the write() is not allowed to block. It must write only the number of
-     * bytes that currently fit in the driver/hardware buffer and then return
-     * this byte count. If this is less than the requested write size the
-     * callback function must be called when more space is available in the
-     * driver/hardware buffer.
      */
     ssize_t (*write)(struct audio_stream_out *stream, const void* buffer,
                      size_t bytes);
@@ -300,6 +303,18 @@ struct audio_stream_out {
                                uint32_t *dsp_frames);
 
 #ifndef ICS_AUDIO_BLOB
+#ifdef QCOM_HARDWARE
+    /**
+     * start audio data rendering
+     */
+    int (*start)(struct audio_stream_out *stream);
+
+    /**
+     * stop audio data rendering
+     */
+    int (*stop)(struct audio_stream_out *stream);
+#endif
+
     /**
      * get the local time at which the next write to the audio driver will be presented.
      * The units are microseconds, where the epoch is decided by the local audio HAL.
@@ -307,6 +322,30 @@ struct audio_stream_out {
     int (*get_next_write_timestamp)(const struct audio_stream_out *stream,
                                     int64_t *timestamp);
 
+#ifdef QCOM_HARDWARE
+    /**
+    * return the current timestamp after quering to the driver
+     */
+    int (*get_time_stamp)(const struct audio_stream_out *stream,
+                               uint64_t *time_stamp);
+    /**
+    * EOS notification from HAL to Player
+     */
+    int (*set_observer)(const struct audio_stream_out *stream,
+                               void *observer);
+    /**
+     * Get the physical address of the buffer allocated in the
+     * driver
+     */
+    int (*get_buffer_info) (const struct audio_stream_out *stream,
+                                struct buf_info **buf);
+    /**
+     * Check if next buffer is available. Waits until next buffer is
+     * available
+     */
+    int (*is_buffer_available) (const struct audio_stream_out *stream,
+                                     int *isAvail);
+#endif
     /**
      * set the callback function for notifying completion of non-blocking
      * write and drain.
@@ -384,6 +423,44 @@ struct audio_stream_out {
 
 };
 typedef struct audio_stream_out audio_stream_out_t;
+#ifdef QCOM_HARDWARE
+/**
+ * audio_broadcast_stream is the abstraction interface for the
+ * audio output hardware.
+ *
+ * It provides information about various properties of the audio output
+ * hardware driver.
+ */
+
+struct audio_broadcast_stream {
+    struct audio_stream common;
+
+    /**
+     * return the audio hardware driver latency in milli seconds.
+     */
+    uint32_t (*get_latency)(const struct audio_broadcast_stream *stream);
+
+    /**
+     * Use this method in situations where audio mixing is done in the
+     * hardware. This method serves as a direct interface with hardware,
+     * allowing you to directly set the volume as apposed to via the framework.
+     * This method might produce multiple PCM outputs or hardware accelerated
+     * codecs, such as MP3 or AAC.
+     */
+    int (*set_volume)(struct audio_broadcast_stream *stream, float left, float right);
+
+    int (*mute)(struct audio_broadcast_stream *stream, bool mute);
+
+    int (*start)(struct audio_broadcast_stream *stream, int64_t absTimeToStart);
+    /**
+     * write audio buffer to driver. Returns number of bytes written
+     */
+    ssize_t (*write)(struct audio_broadcast_stream *stream, const void* buffer,
+                     size_t bytes, int64_t timestamp, int audioType);
+
+};
+typedef struct audio_broadcast_stream audio_broadcast_stream_t;
+#endif
 
 struct audio_stream_in {
     struct audio_stream common;
@@ -533,8 +610,27 @@ struct audio_hw_device {
                               struct audio_stream_out **out);
 #endif
 
+#ifdef QCOM_ICS_LPA_COMPAT
+    /** This method creates and opens the audio hardware output session */
+    int (*open_output_session)(struct audio_hw_device *dev, uint32_t devices,
+                              int *format, int sessionId,
+                              struct audio_stream_out **out);
+#endif
+
     void (*close_output_stream)(struct audio_hw_device *dev,
                                 struct audio_stream_out* stream_out);
+#if defined (QCOM_HARDWARE) || defined (STE_SAMSUNG_HARDWARE)
+    /** This method creates and opens the audio hardware output
+     *  for broadcast stream */
+    int (*open_broadcast_stream)(struct audio_hw_device *dev, uint32_t devices,
+                                 int format, uint32_t channels,
+                                 uint32_t sample_rate,
+                                 uint32_t audio_source,
+                                 struct audio_broadcast_stream **out);
+
+    void (*close_broadcast_stream)(struct audio_hw_device *dev,
+                                   struct audio_broadcast_stream *out);
+#endif
 
     /** This method creates and opens the audio hardware input stream */
 #ifndef ICS_AUDIO_BLOB
@@ -590,7 +686,18 @@ static inline int audio_hw_device_close(struct audio_hw_device* device)
     return device->common.close(&device->common);
 }
 
-
+#ifdef QCOM_HARDWARE
+#ifdef __cplusplus
+/**
+ *Observer class to post the Events from HAL to Flinger
+*/
+class AudioEventObserver {
+public:
+    virtual ~AudioEventObserver() {}
+    virtual void postEOS(int64_t delayUs) = 0;
+};
+#endif
+#endif
 __END_DECLS
 
 #endif  // ANDROID_AUDIO_INTERFACE_H
